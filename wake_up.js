@@ -341,7 +341,14 @@ function getLastUserTime(messages) {
     }
   }
   
-}https://github.com/1751956937-pixel/dylan-heartbeat/edit/main/wake_up.js
+  try {
+    const stat = fs.statSync(TIMELINE_PATH);
+    return stat.mtime;
+  } catch {
+    return null;
+  }
+}
+
 
 
 function stripPosition(messages) {
