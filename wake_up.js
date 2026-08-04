@@ -340,8 +340,9 @@ function getLastUserTime(messages) {
       if (parsed) return parsed;
     }
   }
-  return null;
-}
+  
+}https://github.com/1751956937-pixel/dylan-heartbeat/edit/main/wake_up.js
+
 
 function stripPosition(messages) {
   return messages.map(({ position, ...rest }) => rest);
