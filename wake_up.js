@@ -36,6 +36,10 @@ function readBooleanEnv(key, fallback = false) {
   return ["1", "true", "yes", "on"].includes(raw);
 }
 
+// 批注 2026-08-05：固定推送模式。开启后每 FIXED_PUSH_INTERVAL_MINUTES 分钟必推，不依赖用户活跃判断。
+const FIXED_PUSH_MODE = readBooleanEnv("FIXED_PUSH_MODE", false);
+const FIXED_PUSH_INTERVAL_MINUTES = readNumberEnv("FIXED_PUSH_INTERVAL_MINUTES", 120, { min: 1 });
+
 function getDiaryDateString(date = new Date()) {
   const parts = getDatePartsInTimeZone(date, TIME_ZONE);
   return `${parts.year}-${parts.month}-${parts.day}`;
@@ -160,6 +164,7 @@ function getWakeAfterMinutes(date = new Date()) {
 }
 
 function getCheckIntervalMinutes(date = new Date()) {
+  if (FIXED_PUSH_MODE) return FIXED_PUSH_INTERVAL_MINUTES;
   return isDayTime(date)
     ? readNumberEnv("DAY_CHECK_INTERVAL_MINUTES", 10, { min: 1 })
     : readNumberEnv("NIGHT_CHECK_INTERVAL_MINUTES", 120, { min: 1 });
@@ -316,6 +321,7 @@ function getLocalTimeString() {
 }
 
 function shouldWake(lastUserTime) {
+  if (FIXED_PUSH_MODE) return true;
   const now = getNow();
   const diffMinutes = Math.floor((now - new Date(lastUserTime)) / 1000 / 60);
   return diffMinutes >= getWakeAfterMinutes(now);
@@ -340,16 +346,8 @@ function getLastUserTime(messages) {
       if (parsed) return parsed;
     }
   }
-  
-  try {
-    const stat = fs.statSync(TIMELINE_PATH);
-    return stat.mtime;
-  } catch {
-    return null;
-  }
+  return null;
 }
-
-
 
 function stripPosition(messages) {
   return messages.map(({ position, ...rest }) => rest);
@@ -405,13 +403,15 @@ async function runWakeUp() {
   if (!messages) return;
 
   const lastUserTime = getLastUserTime(messages);
-  if (!lastUserTime) {
+  if (!lastUserTime && !FIXED_PUSH_MODE) {
     console.log("未找到用户时间");
     return;
   }
 
   const now = new Date();
-  const diffMinutes = Math.floor((now - lastUserTime) / 1000 / 60);
+  const diffMinutes = lastUserTime
+    ? Math.floor((now - lastUserTime) / 1000 / 60)
+    : FIXED_PUSH_INTERVAL_MINUTES;
 
   if (!shouldWake(lastUserTime)) {
     console.log("\n暂不需要唤醒\n");
