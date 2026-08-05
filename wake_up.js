@@ -376,6 +376,19 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
   }
 
   // 默认理智版本（开源通用），可自行修改提示词
+  if (FIXED_PUSH_MODE) {
+    return `
+## 最高优先级规则
+1. 这是一次后台自动唤醒，不是用户发起的对话。你没有收到任何新消息。
+2. 你的唯一任务是主动联系用户，必须发送一条消息，绝对不允许输出 [NO_ACTION]。
+3. 直接写你想说的话，第一行作标题，第二行作正文。
+
+## 唤醒信息
+- 当前时间：${currentTime}
+- 距离用户最后一条消息：${diffMinutes} 分钟
+${weatherContext ? `\n${weatherContext}\n` : ""}
+`;
+  }
   return `
 ## 最高优先级规则
 1. 这是一次后台自动唤醒，不是用户发起的对话。你没有收到任何新消息。
@@ -518,8 +531,8 @@ ${historyText}`
     eventContent = diarySaved
       ? `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：只写日记）`
       : `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：模型空回复）`;
-  // 判断 AI 是否明确要静默
-  } else if (aiText.match(/^\[NO_ACTION\]\s*(.{0,20})?/)) {
+  // 判断 AI 是否明确要静默（固定推送模式下禁止静默）
+  } else if (!FIXED_PUSH_MODE && aiText.match(/^\[NO_ACTION\]\s*(.{0,20})?/)) {
     const noActionMatch = aiText.match(/^\[NO_ACTION\]\s*(.{0,20})?/);
     // AI 选择不发送推送
     console.log("\nAI 选择不发送推送\n");
@@ -544,7 +557,7 @@ ${historyText}`
       barkText = barkText.replace(/\s*\[\/BARK\]$/, "").trim();
     }
 
-    // 清洗“标题：”、“正文：”前缀（如果有）
+    // 清洗"标题：""正文："前缀（如果有）
     barkText = barkText
       .replace(/^标题[：:]\s*/gm, "")
       .replace(/^正文[：:]\s*/gm, "");
