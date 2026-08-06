@@ -122,19 +122,13 @@ async function sendPushNotification({ title, body }) {
     return { ok: false, providerLabel: "Bark", reason: "Bark Key 未配置" };
   }
 
-  const barkPayload = {
-    title,
-    body,
-    device_key: process.env.BARK_KEY,
-    icon: process.env.CUSTOM_ICON_URL
-  };
+  // 批注 2026-08-06：改为 GET 方式推送，与手动验证过的链接一致，避免 /push 接口异常导致收不到。
+  let barkUrl = `https://api.day.app/${encodeURIComponent(process.env.BARK_KEY)}/${encodeURIComponent(title)}/${encodeURIComponent(body)}`;
+  if (process.env.CUSTOM_ICON_URL) {
+    barkUrl += `?icon=${encodeURIComponent(process.env.CUSTOM_ICON_URL)}`;
+  }
 
-  const response = await fetch("https://api.day.app/push", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(barkPayload)
-  });
-
+  const response = await fetch(barkUrl);
   const responseText = await response.text();
   let result = {};
   try {
