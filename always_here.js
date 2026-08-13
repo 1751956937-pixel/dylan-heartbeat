@@ -92,12 +92,13 @@ const server = http.createServer(async (req, res) => {
     // 健康检查
     if (pathname === "/healthz" || pathname === "/") return send(200, { status: "ok", time: ts() });
 
-    // 接收健康数据：POST /api/health
-    if (pathname === "/api/health" && req.method === "POST") {
-      const body = await readBody(req);
+    // 接收健康数据：GET（网址带参数）或 POST（JSON）
+    if (pathname === "/api/health") {
+      const body = req.method === "POST" ? await readBody(req) : {};
+      const source = req.method === "GET" ? Object.fromEntries(url.searchParams) : body;
       const clean = {};
       for (const k of ["heart_rate","resting_heart_rate","hrv","steps","sleep_duration_min","sleep_deep_min","sleep_rem_min","active_calories"]) {
-        if (body[k] !== undefined && body[k] !== null && body[k] !== "") clean[k] = body[k];
+        if (source[k] !== undefined && source[k] !== null && source[k] !== "") clean[k] = source[k];
       }
       if (Object.keys(clean).length === 0) return send(400, { error: "没有有效健康字段" });
       clean.recorded_at = ts();
