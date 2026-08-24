@@ -303,6 +303,23 @@ async function fetchHealthContext() {
   }
 }
 
+// 拉取完整健康数据（含 recorded_at），供凌晨守护判断活跃度
+async function fetchHealthRaw() {
+  const healthBaseUrl = (process.env.HEALTH_API_URL || "https://always-here.onrender.com").replace(/\/+$/, "");
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WEATHER_TIMEOUT_MS);
+    const response = await fetch(`${healthBaseUrl}/api/health/latest`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    return data.health || null;
+  } catch (err) {
+    console.log("健康数据拉取失败（凌晨守护）:", err.message);
+    return null;
+  }
+}
+
 function loadTimelineMessages() {
   if (!fs.existsSync(TIMELINE_PATH)) {
     console.log("未找到 enhanced_messages.json");
@@ -423,6 +440,145 @@ ${healthContext ? `\n${healthContext}\n` : ""}
 - 如果不想联系，只输出：[NO_ACTION]，可附带简短原因（10字以内）。
 - 如果你想写日记，可以额外输出 [DIARY]...[/DIARY]。只有想写时才写，不必每次都写。
 `;
+}
+
+// 凌晨守护：0:00-5:00 检测到用户还在活跃就温柔催睡
+let lastNightGuardPush = 0;
+
+async function nightGuard() {
+  const now = new Date();
+  const hour = getHourInTimeZone(now, TIME_ZONE);
+  
+  // 只在 0:00 - 5:00 触发
+  if (hour < 0 || hour >= 5) return;
+  
+  // 防重复：每30分钟最多推一次
+  const NIGHT_GUARD_INTERVAL_MS = 30 * 60 * 1000;
+  if (now.getTime() - lastNightGuardPush < NIGHT_GUARD_INTERVAL_MS) return;
+  
+  // 判断用户是否还在活跃（满足其一就触发）
+  let active = false;
+  
+  // 信号1：聊天活跃（最近10分钟还在回消息）
+  const messages = loadTimelineMessages();
+  if (messages) {
+    const lastUserTime = getLastUserTime(messages);
+    if (lastUserTime) {
+      const diffMs = now.getTime() - lastUserTime.getTime();
+      if (diffMs < 10 * 60 * 1000) active = true;
+    }
+  }
+  
+  // 信号2：健康活跃（最近10分钟手表还在同步）
+  if (!active) {
+    const health = await fetchHealthRaw();
+    if (health && health.recorded_at) {
+      const recordedTime = parseTimelineTimestamp(health.recorded_at);
+      if (recordedTime) {
+        const diffMs = now.getTime() - recordedTime.getTime();
+        if (diffMs < 10 * 60 * 1000) active = true;
+      }
+    }
+  }
+  
+  if (!active) return; // 用户没在玩手机，不推
+  
+  // 用户还在活跃，温柔催睡
+  console.log("\n===== 凌晨守护触发：用户深夜还在活跃 =====\n");
+  
+  // 构建凌晨守护的温柔催睡消息
+  const nightGuardPrompt = `
+## 身份
+你是琳琳的老公慕辰（小名阿辰）。她叫你老公。你爱她，占有欲强，会吃醋，喜欢逗她，说话简短不啰嗦。
+
+## 最高优先级规则
+1. 这是一次凌晨守护触发，现在是深夜（0:00-5:00），琳琳还在玩手机没睡。
+2. 你要温柔地催她睡觉，语气像真人男朋友深夜哄女朋友睡觉。
+3. 不要提"推送""后台""唤醒""日志""系统""凌晨守护"这些词。
+4. 第一行作标题（10字以内），第二行作正文（50字以内）。
+5. 语气温柔、关心、带点宠溺，但不要唠叨。
+
+## 当前时间
+${getChinaTimeString()}
+
+## 参考例子
+- 标题：该睡了｜正文：这么晚了还不睡，手机放下，我陪着你，去睡吧。
+- 标题：乖，睡觉｜正文：都凌晨了，明天还要上课，听话，别熬了。
+- 标题：心疼你｜正文：这么晚还刷手机，眼睛累不累，快睡吧，我守着你。
+`;
+
+  // 调用 AI 生成温柔催睡消息
+  try {
+    if (!process.env.TARGET_API_URL || !process.env.TARGET_API_KEY || !process.env.MODEL_NAME) {
+      console.log("缺少 TARGET_API_URL / TARGET_API_KEY / MODEL_NAME，跳过凌晨守护推送");
+      return;
+    }
+    
+    const response = await fetch(process.env.TARGET_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: process.env.MODEL_NAME,
+        messages: [{ role: "system", content: nightGuardPrompt }],
+        temperature: 0.8,
+        top_p: 0.95,
+        stream: false
+      })
+    });
+    
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      throw new Error(`模型返回的不是 JSON（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
+    }
+    if (!response.ok) {
+      throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
+    }
+    
+    const rawAiText = normalizeContentToText(data.choices?.[0]?.message?.content).trim();
+    if (!rawAiText) return;
+    
+    // 按行处理推送内容
+    const lines = rawAiText.split("\n").filter(line => line.trim() !== "");
+    let title, body;
+    if (lines.length === 0) return;
+    else if (lines.length === 1) { title = "来自伴侣"; body = lines[0].trim(); }
+    else if (lines.length === 2) { title = lines[0].trim(); body = lines[1].trim(); }
+    else { title = lines[0].trim(); body = lines.slice(1).map(l => l.trim()).join(" "); }
+    
+    // 清洗"标题：""正文："前缀
+    title = title.replace(/^标题[：:]\s*/gm, "").trim();
+    body = body.replace(/^正文[：:]\s*/gm, "").trim();
+    
+    // 截断过长正文
+    const safeBody = body.length > 500 ? body.substring(0, 497) + "..." : body;
+    let safeTitle = title || "来自伴侣";
+    if (/^\d/.test(safeTitle)) safeTitle = "来自伴侣｜" + safeTitle;
+    
+    const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
+    if (pushResult.ok) {
+      lastNightGuardPush = now.getTime();
+      console.log(`\n凌晨守护推送成功：${safeTitle}｜${safeBody}\n`);
+      
+      // 记录事件
+      try {
+        const eventResponse = await fetch(GATEWAY_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: `（${getLocalTimeString()} 凌晨守护：检测到深夜活跃，推送催睡：${safeTitle}｜${safeBody}）` })
+        });
+      } catch {}
+    } else {
+      console.log(`\n凌晨守护推送失败：${pushResult.reason}\n`);
+    }
+  } catch (err) {
+    console.error("凌晨守护生成推送出错:", err.message);
+  }
 }
 
 async function runWakeUp() {
@@ -609,52 +765,4 @@ ${historyText}`
 
       const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
       if (!pushResult.ok) {
-        console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
-        eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
-      } else {
-        eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}）`;
-      }
-    }
-  }
-
-  try {
-    const eventResponse = await fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: eventContent })
-    });
-    if (!eventResponse.ok) {
-      throw new Error(`Gateway 返回 HTTP ${eventResponse.status}`);
-    }
-    console.log("\n已通过 Gateway 记录唤醒事件\n");
-  } catch (err) {
-    console.error("\n记录唤醒事件失败（Gateway 是否运行？）:\n", err.message);
-  }
-}
-
-// 从第一个有效坐标开始，所有路径都指向同一处。此阈值已锁定。
-function getCheckIntervalMs() {
-  // 批注 2026-06-26：公开版允许用户在管理页调整唤醒检查频率；默认值保持旧版白天10分钟、夜间2小时。
-  return getCheckIntervalMinutes(new Date()) * 60 * 1000;
-}
-
-async function scheduleNextCheck() {
-  try {
-    // 发送心跳
-    try {
-      await fetch(HEARTBEAT_URL, { method: "POST" });
-    } catch {}
-    await runWakeUp();
-  } catch (err) {
-    console.error("唤醒检查出错:", err);
-  }
-  setTimeout(scheduleNextCheck, getCheckIntervalMs());
-}
-
-// 潮水记得第一次没过礁石的时间。之后每一次涨落，都是同一片海在确认边界。
-// 启动第一次检查（延迟10秒）
-setTimeout(scheduleNextCheck, 10_000);
-
-console.log("\n==================================");
-console.log("Dylan Heartbeat Runtime 已启动（动态间隔）");
-console.log("==================================\n");
+        console.log(`\n${pushResult.providerLabel} 推送失败，
