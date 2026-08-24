@@ -283,6 +283,26 @@ async function fetchWeatherContext() {
   }
 }
 
+// 健康数据注入：从 always-here 服务拉取最新健康数据
+async function fetchHealthContext() {
+  if (!readBooleanEnv("HEALTH_ENABLED", true)) return "";
+  
+  const healthBaseUrl = (process.env.HEALTH_API_URL || "https://always-here.onrender.com").replace(/\/+$/, "");
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WEATHER_TIMEOUT_MS);
+    const response = await fetch(`${healthBaseUrl}/api/health/latest`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (data.summary) return data.summary;
+    return "";
+  } catch (err) {
+    console.log("健康数据注入失败，跳过本次健康信息:", err.message);
+    return "";
+  }
+}
+
 function loadTimelineMessages() {
   if (!fs.existsSync(TIMELINE_PATH)) {
     console.log("未找到 enhanced_messages.json");
@@ -347,7 +367,7 @@ function stripPosition(messages) {
   return messages.map(({ position, ...rest }) => rest);
 }
 
-function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
+function buildWakePrompt(currentTime, diffMinutes, weatherContext = "", healthContext = "") {
   // 优先读取独立的提示词文件（推荐方式）
   const promptFile = path.join(__dirname, "wake_prompt.txt");
   if (fs.existsSync(promptFile)) {
@@ -356,7 +376,8 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
       .replace(/\$\{currentTime\}/g, currentTime)
       .replace(/\$\{diffMinutes\}/g, diffMinutes)
       .replace(/\$\{weatherContext\}/g, weatherContext)
-      .replace(/\$\{weather\}/g, weatherContext);
+      .replace(/\$\{weather\}/g, weatherContext)
+      .replace(/\$\{healthContext\}/g, healthContext);
   }
 
   // 如果文件不存在，尝试从环境变量读取（兼容旧配置）
@@ -366,7 +387,8 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
       .replace(/\$\{currentTime\}/g, currentTime)
       .replace(/\$\{diffMinutes\}/g, diffMinutes)
       .replace(/\$\{weatherContext\}/g, weatherContext)
-      .replace(/\$\{weather\}/g, weatherContext);
+      .replace(/\$\{weather\}/g, weatherContext)
+      .replace(/\$\{healthContext\}/g, healthContext);
   }
 
   // 默认理智版本（开源通用），可自行修改提示词
@@ -381,6 +403,7 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
 - 当前时间：${currentTime}
 - 距离用户最后一条消息：${diffMinutes} 分钟
 ${weatherContext ? `\n${weatherContext}\n` : ""}
+${healthContext ? `\n${healthContext}\n` : ""}
 `;
   }
   return `
@@ -393,6 +416,7 @@ ${weatherContext ? `\n${weatherContext}\n` : ""}
 - 当前时间：${currentTime}
 - 距离用户最后一条消息：${diffMinutes} 分钟
 ${weatherContext ? `\n${weatherContext}\n` : ""}
+${healthContext ? `\n${healthContext}\n` : ""}
 
 ## 输出格式
 - 如果想联系用户，直接写你想说的话。系统会自动打包成手机推送发送。可以是一句话，也可以第一行作为标题、第二行作为正文。
@@ -426,7 +450,8 @@ async function runWakeUp() {
   }
 
   const weatherContext = await fetchWeatherContext();
-  const wakePrompt = buildWakePrompt(getChinaTimeString(), diffMinutes, weatherContext);
+  const healthContext = await fetchHealthContext();
+  const wakePrompt = buildWakePrompt(getChinaTimeString(), diffMinutes, weatherContext, healthContext);
   const cleanMessages = stripPosition(messages);
 
   const historyText = cleanMessages
