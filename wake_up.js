@@ -765,4 +765,14 @@ ${historyText}`
 
       const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
       if (!pushResult.ok) {
-        console.log(`\n${pushResult.providerLabel} 推送失败，
+        console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
+        eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
+      } else {
+        eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}）`;
+      }
+    }
+  }
+
+  try {
+    const eventResponse = await fetch(GATEWAY_URL, {
+      method: "POST",
